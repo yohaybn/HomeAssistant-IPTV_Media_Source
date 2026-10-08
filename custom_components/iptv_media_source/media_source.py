@@ -28,21 +28,9 @@ from homeassistant.core import (
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN, CONF_M3U_URL, CONF_FRIENDLY_NAME
+from .m3u import EXTINF_REGEX, parse_m3u_text  # noqa: F401
 
 _LOGGER = logging.getLogger(__name__)
-
-# Regex to capture channel information from #EXTINF line
-
-EXTINF_REGEX = re.compile(
-    r"#EXTINF:(?P<duration>-?\d+)"  # Duration is mandatory
-    r"(?:.*?\s+tvg-id=\"(?P<tvg_id>[^\"]*)\")?"  # Optional tvg-id
-    r"(?:.*?\s+tvg-name=\"(?P<tvg_name>[^\"]*)\")?"  # Optional tvg-name
-    r"(?:.*?\s+tvg-logo=\"(?P<tvg_logo>[^\"]*)\")?"  # Optional tvg-logo
-    r"(?:.*?\s+group-title=\"(?P<group_title>[^\"]*)\")?"  # Optional group-title
-    r".*?"
-    r",\s*(?P<name>[^,]+)$",
-    re.IGNORECASE,
-)
 
 M3U_CACHE_SECONDS = 300  # Cache M3U content for 5 minutes
 PARSED_M3U_CACHE = {}
@@ -64,9 +52,6 @@ async def async_parse_m3u(
 
     _LOGGER.debug(f"Fetching M3U playlist from: {m3u_url} for {m3u_friendly_name}")
     session = async_get_clientsession(hass)
-    channels = []
-    current_channel_info = {}
-
     try:
         async with session.get(m3u_url, timeout=15) as response:
             response.raise_for_status()
@@ -92,51 +77,7 @@ async def async_parse_m3u(
             f"Could not fetch IPTV playlist: {m3u_friendly_name}"
         ) from err
 
-    lines = content.splitlines()
-
-    if not lines or not lines[0].strip().upper().startswith("#EXTM3U"):
-        _LOGGER.warning(
-            f"M3U file {m3u_url} does not start with #EXTM3U. Attempting to parse anyway."
-        )
-
-    for line_num, line in enumerate(lines):
-        line = line.strip()
-        if not line:
-            continue
-
-        match = EXTINF_REGEX.match(line)
-        if match:
-            current_channel_info = match.groupdict()
-            if not current_channel_info.get("name") and current_channel_info.get(
-                "tvg_name"
-            ):
-                current_channel_info["name"] = current_channel_info["tvg_name"]
-            if current_channel_info.get("name") is None:
-                current_channel_info["name"] = "Unnamed Channel"
-
-        elif current_channel_info and (
-            line.startswith("http://") or line.startswith("https://")
-        ):
-            channel_name = current_channel_info.get("name", "Unnamed Channel").strip()
-            logo = current_channel_info.get("tvg_logo")
-            group = current_channel_info.get("group_title", "Uncategorized").strip()
-
-            channels.append(
-                {
-                    "name": channel_name,
-                    "url": line,
-                    "logo": logo if logo else None,
-                    "group": group,
-                    "original_m3u_url": m3u_url,
-                }
-            )
-            current_channel_info = {}
-        elif (
-            line.startswith("http://") or line.startswith("https://")
-        ) and not current_channel_info:
-            _LOGGER.debug(
-                f"Found a URL without preceding #EXTINF: {line}. Skipping for detailed parsing."
-            )
+    channels = parse_m3u_text(content, m3u_url)
 
     _LOGGER.info(
         f"Parsed {len(channels)} channels from {m3u_friendly_name} ({m3u_url})"
